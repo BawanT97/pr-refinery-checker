@@ -22,7 +22,7 @@ def check_refinery_docs(search_term):
         return "❌ Warning: No matching refinery documentation found on Box."
 
 if __name__ == "__main__":
-    # For a simple test, we just look for "Refinery_Manual"
+    # For a simple test, we just look for "Project-Nihat"
     # You can expand this to read filenames from your git diff!
-    status = check_refinery_docs("Refinery_Manual")
+    status = check_refinery_docs("Project-Nihat")
     print(status)
