@@ -4,24 +4,51 @@ import pandas as pd
 import io
 from datetime import datetime
 
-# Box Developer Token (from GitHub Secrets)
-BOX_ACCESS_TOKEN = os.environ.get('BOX_API_KEY', '')
+# Box OAuth Client Credentials (from GitHub Secrets)
+BOX_CLIENT_ID = os.environ.get('BOX_CLIENT_ID', '')
+BOX_CLIENT_SECRET = os.environ.get('BOX_CLIENT_SECRET', '')
+BOX_ENTERPRISE_ID = os.environ.get('BOX_ENTERPRISE_ID', '')
 BOX_FOLDER_ID = '360216207983'  # Daily Analysis Report folder
 
 print("="*80)
 print(f"DAILY ANALYSIS REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print("="*80)
 
-if not BOX_ACCESS_TOKEN:
-    print("ERROR: BOX_API_KEY environment variable not set!")
+# Validate required environment variables
+if not BOX_CLIENT_ID or not BOX_CLIENT_SECRET or not BOX_ENTERPRISE_ID:
+    print("ERROR: Missing Box OAuth credentials!")
+    print(f"  BOX_CLIENT_ID: {'SET' if BOX_CLIENT_ID else 'MISSING'}")
+    print(f"  BOX_CLIENT_SECRET: {'SET' if BOX_CLIENT_SECRET else 'MISSING'}")
+    print(f"  BOX_ENTERPRISE_ID: {'SET' if BOX_ENTERPRISE_ID else 'MISSING'}")
     exit(1)
+
+# Get access token using Client Credentials Grant
+print("\nAuthenticating with Box API using Client Credentials Grant...")
+token_url = 'https://api.box.com/oauth2/token'
+token_data = {
+    'grant_type': 'client_credentials',
+    'client_id': BOX_CLIENT_ID,
+    'client_secret': BOX_CLIENT_SECRET,
+    'box_subject_type': 'enterprise',
+    'box_subject_id': BOX_ENTERPRISE_ID
+}
+
+token_response = requests.post(token_url, data=token_data)
+
+if token_response.status_code != 200:
+    print(f"ERROR: Failed to get access token: {token_response.status_code}")
+    print(token_response.text)
+    exit(1)
+
+BOX_ACCESS_TOKEN = token_response.json().get('access_token')
+print("Successfully authenticated with Box API!\n")
 
 headers = {
     'Authorization': f'Bearer {BOX_ACCESS_TOKEN}',
 }
 
 # Get all files in the folder
-print(f"\nFetching files from Box folder ID: {BOX_FOLDER_ID}")
+print(f"Fetching files from Box folder ID: {BOX_FOLDER_ID}")
 url = f'https://api.box.com/2.0/folders/{BOX_FOLDER_ID}/items'
 response = requests.get(url, headers=headers)
 
@@ -131,7 +158,7 @@ for item in items:
         
         else:
             print(f"Unsupported file type: {file_ext}")
-    
+        
     except Exception as e:
         print(f"ERROR processing {file_name}: {e}")
     
