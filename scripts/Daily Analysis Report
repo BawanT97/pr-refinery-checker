@@ -1,0 +1,279 @@
+import os
+import re
+import io
+import json
+import datetime as dt
+import requests
+
+# Optional parsers (install as needed):
+# pip install pandas openpyxl pdfplumber pypdf
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+
+try:
+    import pdfplumber
+except Exception:
+    pdfplumber = None
+
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
+
+
+# =========================
+# CONFIG (ENV VARS)
+# =========================
+GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "BawanT97").strip()
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "pr-refinery-checker").strip()
+GITHUB_REF = os.environ.get("GITHUB_REF", "main").strip()  # branch/tag/sha
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip() or None
+
+BASE_PATH = os.environ.get(
+    "BASE_PATH",
+    "Refinery Process and Document/Daily Analysis Report"
+).strip()
+
+# Relevance controls
+# Example: ".xlsx,.xls,.csv,.pdf"
+READ_EXTS = tuple(
+    e.strip().lower()
+    for e in os.environ.get("READ_EXTS", ".xlsx,.xls,.csv,.pdf").split(",")
+    if e.strip()
+)
+
+# Optional keyword filter (keeps order clean)
+# Example: "lab,certificate,unitlog,d86,yield"
+KEYWORDS = tuple(
+    k.strip().lower()
+    for k in os.environ.get("READ_KEYWORDS", "").split(",")
+    if k.strip()
+)
+
+# Per-file token cap (approx)
+TOKENS_PER_FILE = int(os.environ.get("TOKENS_PER_FILE", "10000"))
+CHARS_PER_TOKEN = float(os.environ.get("CHARS_PER_TOKEN", "4"))
+MAX_CHARS_PER_FILE = int(TOKENS_PER_FILE * CHARS_PER_TOKEN)
+
+# Hard byte cap to prevent pulling huge binaries
+MAX_BYTES_PER_FILE = int(os.environ.get("MAX_BYTES_PER_FILE", str(50 * 1024 * 1024)))  # 50MB
+
+
+DATE_RE = re.compile(r"^\d{2}-\d{2}-\d{4}$")
+
+
+# =========================
+# GITHUB HELPERS
+# =========================
+def gh_headers():
+    h = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "bazian-daily-analysis-reader",
+    }
+    if GITHUB_TOKEN:
+        h["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    return h
+
+
+def gh_get_json(url: str) -> dict:
+    r = requests.get(url, headers=gh_headers(), timeout=60)
+    if r.status_code != 200:
+        raise RuntimeError(f"GitHub API error {r.status_code}: {r.text[:400]}")
+    return r.json()
+
+
+def gh_list_dir(path: str) -> list:
+    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path}?ref={GITHUB_REF}"
+    return gh_get_json(url)
+
+
+def parse_ddmmyyyy(s: str) -> dt.date:
+    return dt.datetime.strptime(s, "%d-%m-%Y").date()
+
+
+def find_latest_date_folder(base_path: str):
+    items = gh_list_dir(base_path)
+    candidates = []
+    for it in items:
+        if it.get("type") == "dir":
+            name = it.get("name", "")
+            if DATE_RE.match(name):
+                try:
+                    candidates.append((parse_ddmmyyyy(name), name))
+                except Exception:
+                    pass
+    if not candidates:
+        raise RuntimeError(f"No dd-mm-yyyy folders found under: {base_path}")
+    candidates.sort(key=lambda x: x[0])
+    latest_date, latest_name = candidates[-1]
+    return f"{base_path}/{latest_name}", latest_date
+
+
+def walk_files(path: str):
+    items = gh_list_dir(path)
+    for it in items:
+        t = it.get("type")
+        if t == "file":
+            yield it
+        elif t == "dir":
+            yield from walk_files(it["path"])
+
+
+def is_relevant(name: str) -> bool:
+    n = (name or "").lower()
+    if READ_EXTS and not n.endswith(READ_EXTS):
+        return False
+    if KEYWORDS and not any(k in n for k in KEYWORDS):
+        return False
+    return True
+
+
+def stream_bytes(download_url: str) -> tuple[bytes, str]:
+    with requests.get(download_url, headers=gh_headers(), stream=True, timeout=180) as r:
+        if r.status_code != 200:
+            raise RuntimeError(f"Download failed {r.status_code}: {download_url}")
+        ctype = r.headers.get("Content-Type", "") or ""
+        buf = bytearray()
+        for chunk in r.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            buf.extend(chunk)
+            if len(buf) > MAX_BYTES_PER_FILE:
+                raise RuntimeError(f"EXCEEDS_MAX_BYTES ({len(buf)} > {MAX_BYTES_PER_FILE})")
+    return bytes(buf), ctype
+
+
+# =========================
+# PARSERS
+# =========================
+def decode_text(data: bytes) -> str:
+    for enc in ("utf-8", "utf-16", "cp1252", "latin-1"):
+        try:
+            return data.decode(enc)
+        except Exception:
+            continue
+    return data.decode("latin-1", errors="replace")
+
+
+def extract_pdf_text(data: bytes) -> str:
+    if pdfplumber is not None:
+        parts = []
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            for page in pdf.pages:
+                txt = page.extract_text() or ""
+                if txt.strip():
+                    parts.append(txt)
+        return "\n".join(parts).strip()
+
+    if PdfReader is not None:
+        reader = PdfReader(io.BytesIO(data))
+        parts = []
+        for p in reader.pages:
+            txt = p.extract_text() or ""
+            if txt.strip():
+                parts.append(txt)
+        return "\n".join(parts).strip()
+
+    return "[PARSE_ERROR] Install pdfplumber or pypdf to extract PDF text."
+
+
+def extract_excel_text(data: bytes) -> str:
+    if pd is None:
+        return "[PARSE_ERROR] Install pandas+openpyxl to read Excel."
+    # Read all sheets, stringify as CSV-like blocks
+    xls = pd.ExcelFile(io.BytesIO(data))
+    out = []
+    for sheet in xls.sheet_names:
+        df = pd.read_excel(xls, sheet_name=sheet)
+        out.append(f"--- SHEET: {sheet} ---")
+        out.append(df.to_csv(index=False))
+    return "\n".join(out).strip()
+
+
+def extract_csv_text(data: bytes) -> str:
+    if pd is None:
+        return decode_text(data)
+    df = pd.read_csv(io.BytesIO(data))
+    return df.to_csv(index=False)
+
+
+def cap_text(text: str) -> tuple[str, bool]:
+    if len(text) > MAX_CHARS_PER_FILE:
+        return text[:MAX_CHARS_PER_FILE], True
+    return text, False
+
+
+# =========================
+# MAIN (CONTEXT BLOCK OUTPUT)
+# =========================
+def main():
+    print("TASK: Read Daily Analysis Report files (Excel/CSV/PDF) from GitHub (stream-only).")
+    print(f"REPO: {GITHUB_OWNER}/{GITHUB_REPO}@{GITHUB_REF}")
+    print(f"BASE_PATH: {BASE_PATH}")
+    print(f"READ_EXTS: {', '.join(READ_EXTS) if READ_EXTS else '(none)'}")
+    print(f"READ_KEYWORDS: {', '.join(KEYWORDS) if KEYWORDS else '(none)'}")
+    print(f"PER_FILE_CAP: ~{TOKENS_PER_FILE} tokens (~{MAX_CHARS_PER_FILE} chars)")
+    print()
+
+    latest_dir, latest_date = find_latest_date_folder(BASE_PATH)
+
+    # Enumerate ALL files in the latest date folder, then filter for relevance before reading content
+    all_files = list(walk_files(latest_dir))
+    relevant = [f for f in all_files if is_relevant(f.get("name", ""))]
+
+    print("CONTEXT_BLOCK_START")
+    print(f"TARGET_DATE: {latest_date.strftime('%d-%m-%Y')}")
+    print(f"LATEST_DIR: {latest_dir}")
+    print(f"FILES_FOUND_TOTAL: {len(all_files)}")
+    print(f"FILES_RELEVANT: {len(relevant)}")
+    print()
+
+    # Attempt to read 100% of relevant files
+    for it in relevant:
+        path = it.get("path", "")
+        name = it.get("name", "")
+        durl = it.get("download_url", "")
+        size = it.get("size", 0)
+
+        print("=== START OF FILE ===")
+        print(f"PATH: {path}")
+        print(f"NAME: {name}")
+        print(f"SIZE_BYTES: {size}")
+
+        if not durl:
+            print("STATUS: ERROR (missing download_url)")
+            print("=== END OF FILE ===\n")
+            continue
+
+        try:
+            b, ctype = stream_bytes(durl)
+            n = name.lower()
+
+            if n.endswith(".pdf"):
+                text = extract_pdf_text(b)
+            elif n.endswith(".csv"):
+                text = extract_csv_text(b)
+            elif n.endswith(".xlsx") or n.endswith(".xls"):
+                text = extract_excel_text(b)
+            else:
+                # fallback for any other "text-like" file
+                text = decode_text(b)
+
+            text, truncated = cap_text(text)
+            print(f"CONTENT_TYPE: {ctype}")
+            print(f"TRUNCATED: {str(truncated).lower()} (cap ~{TOKENS_PER_FILE} tokens)")
+            print("--- CONTENT ---")
+            print(text)
+
+        except Exception as e:
+            print(f"STATUS: ERROR ({e})")
+
+        print("=== END OF FILE ===\n")
+
+    print("CONTEXT_BLOCK_END")
+
+
+if __name__ == "__main__":
+    main()
