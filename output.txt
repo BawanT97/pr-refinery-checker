@@ -1,0 +1,28 @@
+TASK: Read Daily Analysis Report files (Excel/CSV/PDF) from Box.
+AUTH: Using OAuth 2.0 Client Credentials Grant (permanent)
+BOX_FOLDER_ID: 360216207983
+READ_EXTS: .xlsx, .xls, .csv, .pdf
+READ_KEYWORDS: (none)
+PER_FILE_CAP: ~10000 tokens (~40000 chars)
+
+Traceback (most recent call last):
+  File "/home/runner/work/pr-refinery-checker/pr-refinery-checker/scripts/Daily Analysis Report", line 293, in <module>
+    main()
+  File "/home/runner/work/pr-refinery-checker/pr-refinery-checker/scripts/Daily Analysis Report", line 240, in main
+    latest_id, latest_name, latest_date = find_latest_date_folder(BOX_FOLDER_ID)
+                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/pr-refinery-checker/pr-refinery-checker/scripts/Daily Analysis Report", line 120, in find_latest_date_folder
+    items = box_list_folder(folder_id)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/pr-refinery-checker/pr-refinery-checker/scripts/Daily Analysis Report", line 112, in box_list_folder
+    data = box_get_json(url)
+           ^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/pr-refinery-checker/pr-refinery-checker/scripts/Daily Analysis Report", line 104, in box_get_json
+    r = requests.get(url, headers=box_headers(), timeout=60)
+                                  ^^^^^^^^^^^^^
+  File "/home/runner/work/pr-refinery-checker/pr-refinery-checker/scripts/Daily Analysis Report", line 97, in box_headers
+    token = get_access_token()
+            ^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/pr-refinery-checker/pr-refinery-checker/scripts/Daily Analysis Report", line 87, in get_access_token
+    raise RuntimeError(f"Failed to get access token: {r.status_code} - {r.text[:400]}")
+RuntimeError: Failed to get access token: 400 - {"error":"invalid_client","error_description":"The client credentials are invalid"}
