@@ -29,6 +29,10 @@ jobs:
           pip install requests pandas openpyxl pdfplumber pypdf
 
       - name: Run Daily Analysis Report script and save output
+        env:
+          BOX_CLIENT_ID: ${{ secrets.BOX_CLIENT_ID }}
+          BOX_CLIENT_SECRET: ${{ secrets.BOX_CLIENT_SECRET }}
+          BOX_ENTERPRISE_ID: ${{ secrets.BOX_ENTERPRISE_ID }}
         run: |
           python "scripts/Daily Analysis Report" > output.txt 2>&1 || true
           echo "Script execution completed"
