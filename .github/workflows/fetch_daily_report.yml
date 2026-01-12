@@ -26,8 +26,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests pandas openpyxl pdfplumber pypdf
+          pip install requests pandas openpyxl pdfplumber pypdf boxsdk[jwt]
 
       - name: Run Daily Analysis Report script and save output
         env:
-          BOX_API_KEY: ${{ secrets.BOX_API_KEY }}
+                  BOX_CLIENT_ID: ${{ secrets.BOX_CLIENT_ID }}
+                          BOX_CLIENT_SECRET: ${{ secrets.BOX_CLIENT_SECRET }}
+                                  BOX_ENTERPRISE_ID: ${{ secrets.BOX_ENTERPRISE_ID }}
+                                        run: |
+                                                python scripts/fetch_daily_report.py
