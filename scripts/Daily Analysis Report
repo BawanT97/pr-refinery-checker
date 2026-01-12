@@ -23,10 +23,11 @@ except Exception:
     PdfReader = None
 
 # =========================
-# CONFIG (ENV VARS) - BOX API
+# CONFIG - BOX API (Client Credentials Grant - PERMANENT)
 # =========================
-# Box Developer Token (expires every 60 min - for production use OAuth or JWT)
-BOX_TOKEN = os.environ.get("BOX_TOKEN", "h8OZVll3tfV3RxAESQugDR9Ij0JdbSzA").strip()
+# Box OAuth 2.0 Client Credentials (never expires)
+BOX_CLIENT_ID = os.environ.get("BOX_CLIENT_ID", "0o3518woygv1tnj13ag85uf26ei2f0n7").strip()
+BOX_CLIENT_SECRET = os.environ.get("BOX_CLIENT_SECRET", "AFcqfModQrmyY0hIzOS1BeaXS5DKzCdI").strip()
 
 # Box Folder ID for "Daily Analysis Report" folder
 BOX_FOLDER_ID = os.environ.get("BOX_FOLDER_ID", "360216207983").strip()
@@ -55,12 +56,47 @@ MAX_BYTES_PER_FILE = int(os.environ.get("MAX_BYTES_PER_FILE", str(50 * 1024 * 10
 
 DATE_RE = re.compile(r"^\d{2}-\d{2}-\d{4}$")
 
+# Global access token cache
+_access_token = None
+_token_expires_at = None
+
 # =========================
-# BOX API HELPERS
+# BOX API HELPERS (Client Credentials Grant)
 # =========================
+def get_access_token():
+    """Get access token using Client Credentials Grant (OAuth 2.0)"""
+    global _access_token, _token_expires_at
+    
+    # Return cached token if still valid (with 5 min buffer)
+    if _access_token and _token_expires_at:
+        if dt.datetime.now() < _token_expires_at - dt.timedelta(minutes=5):
+            return _access_token
+    
+    # Request new token
+    url = "https://api.box.com/oauth2/token"
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": BOX_CLIENT_ID,
+        "client_secret": BOX_CLIENT_SECRET,
+        "box_subject_type": "user",
+        "box_subject_id": "13817020641"  # Your Box User ID
+    }
+    
+    r = requests.post(url, data=data, timeout=60)
+    if r.status_code != 200:
+        raise RuntimeError(f"Failed to get access token: {r.status_code} - {r.text[:400]}")
+    
+    token_data = r.json()
+    _access_token = token_data["access_token"]
+    expires_in = token_data.get("expires_in", 3600)
+    _token_expires_at = dt.datetime.now() + dt.timedelta(seconds=expires_in)
+    
+    return _access_token
+
 def box_headers():
+    token = get_access_token()
     return {
-        "Authorization": f"Bearer {BOX_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
 
@@ -194,6 +230,7 @@ def cap_text(text: str) -> tuple:
 # =========================
 def main():
     print("TASK: Read Daily Analysis Report files (Excel/CSV/PDF) from Box.")
+    print("AUTH: Using OAuth 2.0 Client Credentials Grant (permanent)")
     print(f"BOX_FOLDER_ID: {BOX_FOLDER_ID}")
     print(f"READ_EXTS: {', '.join(READ_EXTS) if READ_EXTS else '(none)'}")
     print(f"READ_KEYWORDS: {', '.join(KEYWORDS) if KEYWORDS else '(none)'}")
